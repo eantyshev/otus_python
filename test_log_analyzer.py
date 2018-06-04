@@ -119,9 +119,11 @@ class TetsLogAnalyzer(unittest.TestCase):
         res = log_analyzer._last_nginx_info('fake_path')
         mock_listdir.assert_called_once_with('fake_path')
         self.assertEqual(res,
-                         ('fake_path/nginx-access-ui.log-20180303.gz',
-                          True,
-                          '2018.03.03'))
+                         NginxLogInfo(
+                             fpath='fake_path/nginx-access-ui.log-20180303.gz',
+                             is_gz=True,
+                             date='2018.03.03')
+                         )
 
     @mock.patch('log_analyzer.open', return_value='plain_fobj')
     def test_open_plain(self, mock_open):
@@ -140,7 +142,7 @@ class TetsLogAnalyzer(unittest.TestCase):
     def test_nginx_log_parser(self, mock_open, mock_parse_line):
         ctx = mock_open.return_value
         f_obj = ctx.__enter__.return_value
-        f_obj.readlines.return_value = ['line1\n', 'line2']
+        f_obj.__iter__.return_value = ['line1\n', 'line2']
         records = [
             LogRecord(url='url1',
                       request_time=0.1),

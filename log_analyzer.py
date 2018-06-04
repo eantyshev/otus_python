@@ -4,7 +4,8 @@
 from array import array
 import argparse
 import bisect
-from collections import namedtuple, Counter, defaultdict
+from collections import namedtuple, defaultdict
+from datetime import datetime
 import gzip
 import json
 import logging
@@ -14,6 +15,7 @@ import yaml
 import re
 
 LogRecord = namedtuple('LogRecord', ['url', 'request_time'])
+NginxLogInfo = namedtuple('NginxLogInfo', ['fpath', 'is_gz', 'date'])
 
 # log_format ui_short '$remote_addr $remote_user
 #                     '$http_x_real_ip [$time_local] "$request" '
@@ -94,11 +96,16 @@ def _last_nginx_info(path):
     for fname in sorted(os.listdir(path), reverse=True):
         m = reg.match(fname)
         if m:
-            last_date = m.group('date')
+            date = m.group('date')
             is_gz = bool(m.group('gz'))
-            last_date = ("%s.%s.%s" %
-                         (last_date[:4], last_date[4:6], last_date[6:]))
-            return (os.path.join(path, fname), is_gz, last_date)
+            try:
+                date = datetime.strptime(date, "%Y%m%d").strftime("%Y.%m.%d")
+            except ValueError as exc:
+                info("Log file %s has bad date format: %s", fname, exc)
+                continue
+            return NginxLogInfo(fpath=os.path.join(path, fname),
+                                is_gz=is_gz,
+                                date=date)
     else:
         info("No matching nginx log files under path: ", path)
         return None
@@ -134,16 +141,15 @@ def nginx_log_parser(fpath, is_gz, error_ratio):
     error_cnt = 0
     cnt = 0
     with _open(fpath, is_gz) as f_obj:
-        for line in f_obj.readlines():
+        for line in f_obj:
             cnt += 1
             try:
                 yield _parse_single_line(record_regexp, line)
             except RuntimeError as exc:
+                exception(exc)
                 error_cnt += 1
-                if error_cnt > error_ratio * cnt:
-                    raise
-                else:
-                    exception(exc)
+    if error_cnt > error_ratio * cnt:
+        raise RuntimeError("Error ratio limit exceeded: ", error_cnt)
 
 
 def _collect_stats(records, report_size):
@@ -212,24 +218,24 @@ def main():
     config = get_config(args.config)
     setup_logging(config)
     info(config)
-    try:
-        fpath, is_gz, date = _last_nginx_info(config['LOG_DIR'])
-        info("Found log file: %s, is_gz: %s", fpath, is_gz)
-        target_path = ensure_report_files(REPORT_HTML,
-                                          config['REPORT_DIR'],
-                                          date)
-        if not target_path:
-            info("Log is already parsed: %s", fpath)
-            return
 
-        it = nginx_log_parser(fpath, is_gz, config['ERROR_RATIO'])
-        stats = _collect_stats(it, config['REPORT_SIZE'])
-        create_report_html(REPORT_HTML, target_path, stats)
+    fpath, is_gz, date = _last_nginx_info(config['LOG_DIR'])
+    info("Found log file: %s, is_gz: %s", fpath, is_gz)
+    target_path = ensure_report_files(REPORT_HTML,
+                                      config['REPORT_DIR'],
+                                      date)
+    if not target_path:
+        info("Log is already parsed: %s", fpath)
+        return
 
-    except (Exception, KeyboardInterrupt) as exc:
-        exception(exc)
-        raise
+    it = nginx_log_parser(fpath, is_gz, config['ERROR_RATIO'])
+    stats = _collect_stats(it, config['REPORT_SIZE'])
+    create_report_html(REPORT_HTML, target_path, stats)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except (Exception, KeyboardInterrupt) as exc:
+        exception(exc)
+        raise
