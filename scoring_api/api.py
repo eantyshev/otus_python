@@ -38,7 +38,13 @@ GENDERS = {
 }
 
 
+class ValidationError(Exception):
+    pass
+
+
 class Field(object):
+    __metaclass__ = ABCMeta
+
     def __init__(self, required=True, nullable=False):
         self.required = required
         self.nullable = nullable
@@ -51,6 +57,10 @@ class Field(object):
 
     def __set__(self, instance, value):
         instance.__dict__[self.label] = value
+
+    @abstractmethod
+    def validate(cls, value):
+        pass
 
 
 class FieldOwner(type):
@@ -75,104 +85,105 @@ class BaseRequest(object):
 
     def validate_fields(self):
         cls = self.__class__
-        for field in cls.fields:
+        for field in self.fields:
             d = getattr(cls, field)
             if field not in self.__dict__:
                 if d.required:
-                    raise ValueError(
+                    raise ValidationError(
                         "Required field %s is not defined!" % field)
                 continue
             value = self.__dict__[field]
             if not d.nullable and not value:
-                raise ValueError("Non-nullable field %s is %r" %
-                                 (field, value))
-            if hasattr(d, 'validate') and callable(d.validate):
-                try:
-                    d.validate(value)
-                except (TypeError, ValueError) as exc:
-                    raise ValueError("Field %s (type %s) invalid: %s (%r)" %
-                                     (
-                                         field,
-                                         d.__class__.__name__,
-                                         exc.message,
-                                         value
-                                     )
-                                     )
+                raise ValidationError("Non-nullable field %s is %r" %
+                                      (field, value))
+            try:
+                d.validate(value)
+            except ValidationError as exc:
+                raise ValidationError("Field %s (type %s) invalid: %s (%r)" %
+                                      (
+                                          field,
+                                          d.__class__.__name__,
+                                          exc.message,
+                                          value
+                                      )
+                                      )
 
 
 class CharField(Field):
-    @staticmethod
-    def validate(value):
+    @classmethod
+    def validate(cls, value):
         if not isinstance(value, (str, unicode)):
-            raise ValueError("Not a str/unicode")
+            raise ValidationError("Not a str/unicode")
 
 
 class ArgumentsField(Field):
-    @staticmethod
-    def validate(value):
+    @classmethod
+    def validate(cls, value):
         if not isinstance(value, dict):
-            raise ValueError("Is not a dict")
+            raise ValidationError("Is not a dict")
 
 
 class EmailField(CharField):
-    @staticmethod
-    def validate(value):
-        CharField.validate(value)
+    @classmethod
+    def validate(cls, value):
+        super(EmailField, cls).validate(value)
         if "@" not in value:
-            raise ValueError("email should contain @")
+            raise ValidationError("email should contain @")
 
 
 class PhoneField(Field):
-    @staticmethod
-    def validate(value):
+    @classmethod
+    def validate(cls, value):
         if isinstance(value, int):
             value = str(value)
         # TODO: why not check if phone number has only digits?
         if not (len(value) == 11 and value.startswith("7")):
-            raise ValueError("Phone should be of 11 symbols long and "
-                             "to start with '7'")
+            raise ValidationError("Phone should be of 11 symbols long and "
+                                  "to start with '7'")
 
 
 class DateField(Field):
-    @staticmethod
-    def validate(value):
-        if not isinstance(value, (str, unicode)):
-            raise ValueError("Date should be a string")
-        # this raises ValueError
-        return datetime.strptime(value, "%d.%m.%Y")
+    @classmethod
+    def validate(cls, value):
+        try:
+            return datetime.strptime(value, "%d.%m.%Y")
+        except (TypeError, ValueError) as e:
+            raise ValidationError("Not a valid date")
 
 
 class BirthDayField(DateField):
-    @staticmethod
-    def validate(value):
-        dt = DateField.validate(value)
+    @classmethod
+    def validate(cls, value):
+        dt = super(BirthDayField, cls).validate(value)
         now = datetime.now()
         if not (dt < now and now.year <= dt.year + 70):
-            raise ValueError("Valid age is between 0 and 70 years")
+            raise ValidationError("Valid age is between 0 and 70 years")
 
 
 class GenderField(Field):
-    @staticmethod
-    def validate(value):
+    @classmethod
+    def validate(cls, value):
         if value not in GENDERS.keys():
-            raise ValueError("Gender should be in %r" % GENDERS.keys())
+            raise ValidationError("Gender should be in %r" % GENDERS.keys())
 
 
 class ClientIDsField(Field):
-    def validate(self, ids):
+    @classmethod
+    def validate(cls, ids):
         if (not isinstance(ids, list) or
                 not all(isinstance(i, int) for i in ids)):
-            raise ValueError("Client IDs should be list of ints")
+            raise ValidationError("Client IDs should be list of ints")
 
 
 class ClientsInterestsRequest(BaseRequest):
     client_ids = ClientIDsField(required=True)
     date = DateField(required=False, nullable=True)
 
-    def fill_context(self, ctx):
+    def _fill_context(self, ctx):
         ctx['nclients'] = len(self.client_ids)
 
-    def get_result(self, store, is_admin=False):
+    def get_result(self, ctx, store, is_admin=False):
+        self._fill_context(ctx)
         return {clid: scoring.get_interests(store, clid)
                 for clid in self.client_ids}
 
@@ -190,13 +201,14 @@ class OnlineScoreRequest(BaseRequest):
         if not ((self.first_name and self.last_name) or
                 (self.email and self.phone) or
                 (self.birthday and self.gender is not None)):
-            raise ValueError("At least one of the pairs should be defined: "
-                             "first/last name, email/phone, birthday/gender")
+            raise ValidationError("At least one of the pairs should be defined: "
+                                  "first/last name, email/phone, birthday/gender")
 
-    def fill_context(self, ctx):
+    def _fill_context(self, ctx):
         ctx['has'] = [f for f in self.fields if getattr(self, f) is not None]
 
-    def get_result(self, store, is_admin=False):
+    def get_result(self, ctx, store, is_admin=False):
+        self._fill_context(ctx)
         if is_admin:
             return {"score": 42}
         return {
@@ -242,7 +254,7 @@ def method_handler(request, ctx, store):
     method_request = MethodRequest(request['body'])
     try:
         method_request.validate_fields()
-    except ValueError, e:
+    except ValidationError, e:
         return e.message, INVALID_REQUEST
 
     if not check_auth(method_request):
@@ -256,12 +268,10 @@ def method_handler(request, ctx, store):
     req = request_map[method_request.method](method_request.arguments)
     try:
         req.validate_fields()
-    except ValueError, e:
+    except ValidationError, e:
         return e.message, INVALID_REQUEST
-    # Generally we need a valid request to fill the context
-    req.fill_context(ctx)
 
-    result = req.get_result(store, method_request.is_admin)
+    result = req.get_result(ctx, store, is_admin=method_request.is_admin)
 
     return result, OK
 
