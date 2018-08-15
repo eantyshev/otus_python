@@ -62,7 +62,7 @@ class LogisticRegression:
             # TODO:                                                                 #
             # Update the weights using the gradient and the learning rate.          #
             #########################################################################
-            self.w = self.w + learning_rate * gradW
+            self.w = self.w - learning_rate * gradW
 
             #########################################################################
             #                       END OF YOUR CODE                                #
@@ -93,10 +93,8 @@ class LogisticRegression:
         # Implement this method. Store the probabilities of classes in y_proba.   #
         # Hint: It might be helpful to use np.vstack and np.sum                   #
         ###########################################################################
-        def sigma(x):
-            return 1.0/(1.0 + np.exp(-1.0 * x.dot(self.w)))
-        y_pos = sigma(X)
-        y_neg = 1 - sigma(X)
+        y_pos = self.sigma(X)
+        y_neg = 1 - y_pos
         y_proba = np.vstack((y_pos, y_neg)).transpose()
 
         ###########################################################################
@@ -121,16 +119,14 @@ class LogisticRegression:
         # TODO:                                                                   #
         # Implement this method. Store the predicted labels in y_pred.            #
         ###########################################################################
-        def y_likely(a, b):
-            return float(b < a)
-        ufunc = np.frompyfunc(y_likely, 2, 1)
         y_proba = self.predict_proba(X, append_bias=True)
-        y_pred = ufunc(y_proba[:, 0], y_proba[:, 1])
+        # if argmax == 0: 1, argmax == 1: 0
+        y_pred = 1 - np.argmax(y_proba, axis=1)
 
         ###########################################################################
         #                           END OF YOUR CODE                              #
         ###########################################################################
-        return y_pred.astype(np.uint8)
+        return y_pred
 
     def loss(self, X_batch, y_batch, reg):
         """Logistic Regression loss function
@@ -144,14 +140,12 @@ class LogisticRegression:
         """
         dw = np.zeros_like(self.w)  # initialize the gradient as zero
         # Compute loss and gradient. Your code should not contain python loops.
-        def sigma(x):
-            return 1.0/(1.0 + np.exp(-1.0 * x.dot(self.w)))
 
-        loss = np.sum(
-            y_batch * np.log(sigma(X_batch)) +
-            (1 - y_batch) * (1-np.log(sigma(X_batch)))
+        loss = -1.0 * np.sum(
+            y_batch * np.log(self.sigma(X_batch)) +
+            (1 - y_batch) * (1-np.log(self.sigma(X_batch)))
         )
-        dw = (y_batch - sigma(X_batch)) * X_batch
+        dw = -1.0 * (y_batch - self.sigma(X_batch)) * X_batch
 
         # Right now the loss is a sum over all training examples, but we want it
         # to be an average instead so we divide by num_train.
@@ -163,10 +157,13 @@ class LogisticRegression:
         # Add regularization to the loss and gradient.
         # Note that you have to exclude bias term in regularization.
         w = self.w[:-1]
-        loss -= reg * np.sum(w * w) / w.shape[0]
-        dw[:-1] -= reg * 2 * w / w.shape[0]
+        loss += reg * np.sum(w * w) / w.shape[0]
+        dw[:-1] += reg * 2 * w / w.shape[0]
 
         return loss, dw
+
+    def sigma(self, X):
+        return 1.0/(1.0 + np.exp(-1.0 * X.dot(self.w)))
 
     @staticmethod
     def append_biases(X):
